@@ -1,448 +1,690 @@
-#include <gtk/gtk.h>
+#include <QtCore/QFile>
+#include <QtCore/QFileInfo>
+#include <QtCore/QTextStream>
+#include <QtGui/QFont>
+#include <QtGui/QKeySequence>
+#include <QtGui/QTextCursor>
+#include <QtGui/QTextDocument>
+#include <QtWidgets/QAction>
+#include <QtWidgets/QApplication>
+#include <QtWidgets/QCheckBox>
+#include <QtWidgets/QDialog>
+#include <QtWidgets/QFileDialog>
+#include <QtWidgets/QHBoxLayout>
+#include <QtWidgets/QLabel>
+#include <QtWidgets/QLineEdit>
+#include <QtWidgets/QMainWindow>
+#include <QtWidgets/QMenu>
+#include <QtWidgets/QMenuBar>
+#include <QtWidgets/QMessageBox>
+#include <QtWidgets/QPushButton>
+#include <QtWidgets/QStatusBar>
+#include <QtWidgets/QTabWidget>
+#include <QtWidgets/QTextEdit>
+#include <QtWidgets/QVBoxLayout>
+#include <QtWidgets/QWidget>
 #include <memory>
-#include <string>
-#include <vector>
 
-class XamEditor {
+class FindReplaceDialog : public QDialog {
+    Q_OBJECT
+
   private:
-    GtkWidget *window;
-    GtkWidget *notebook;
-    GtkWidget *menubar;
-    GtkWidget *vbox;
-    GtkAccelGroup *accel_group;
-
-    struct Tab {
-        GtkWidget *scrolled_window;
-        GtkWidget *text_view;
-        GtkTextBuffer *text_buffer;
-        std::string filename;
-        bool is_modified;
-
-        Tab()
-            : scrolled_window(nullptr), text_view(nullptr), text_buffer(nullptr),
-              filename("Untitled"), is_modified(false) {}
-
-        ~Tab() = default;
-    };
-
-    std::vector<std::unique_ptr<Tab>> tabs;
-    int tab_counter = 1;
+    QLineEdit *findLineEdit;
+    QLineEdit *replaceLineEdit;
+    QPushButton *findNextButton;
+    QPushButton *findPrevButton;
+    QPushButton *replaceButton;
+    QPushButton *replaceAllButton;
+    QCheckBox *caseSensitiveBox;
+    QCheckBox *wholeWordsBox;
+    QTextEdit *textEdit;
+    QTextCursor lastFoundCursor;
+    bool isReplaceMode;
 
   public:
-    XamEditor() {
-        // Initialize GTK
-        window = gtk_window_new(GTK_WINDOW_TOPLEVEL);
-        gtk_window_set_title(GTK_WINDOW(window), "Text Editor");
-        gtk_window_set_default_size(GTK_WINDOW(window), 800, 600);
-        gtk_window_set_position(GTK_WINDOW(window), GTK_WIN_POS_CENTER);
-
-        // Create accelerator group
-        accel_group = gtk_accel_group_new();
-        gtk_window_add_accel_group(GTK_WINDOW(window), accel_group);
-
-        // Create main container
-        vbox = gtk_box_new(GTK_ORIENTATION_VERTICAL, 0);
-        gtk_container_add(GTK_CONTAINER(window), vbox);
-
-        // Create menu bar
-        create_menubar();
-
-        // Create notebook for tabs
-        notebook = gtk_notebook_new();
-        gtk_notebook_set_scrollable(GTK_NOTEBOOK(notebook), TRUE);
-        gtk_box_pack_start(GTK_BOX(vbox), notebook, TRUE, TRUE, 0);
-
-        // Connect signals
-        g_signal_connect(window, "destroy", G_CALLBACK(gtk_main_quit), NULL);
-
-        // Create first tab
-        new_file();
-
-        gtk_widget_show_all(window);
+    FindReplaceDialog(QTextEdit *editor, bool replaceMode = false, QWidget *parent = nullptr)
+        : QDialog(parent), textEdit(editor), isReplaceMode(replaceMode) {
+        setWindowTitle(replaceMode ? "Find and Replace" : "Find");
+        setModal(false);
+        setupUI();
+        connectSignals();
     }
 
-    void create_menubar() {
-        menubar = gtk_menu_bar_new();
-        gtk_box_pack_start(GTK_BOX(vbox), menubar, FALSE, FALSE, 0);
+  private slots:
+    void findNext() {
+        QString searchText = findLineEdit->text();
+        if (searchText.isEmpty())
+            return;
 
-        // File menu
-        GtkWidget *file_menu = gtk_menu_new();
-        GtkWidget *file_item = gtk_menu_item_new_with_label("File");
-        gtk_menu_item_set_submenu(GTK_MENU_ITEM(file_item), file_menu);
-        gtk_menu_shell_append(GTK_MENU_SHELL(menubar), file_item);
+        QTextDocument::FindFlags flags = QTextDocument::FindFlags();
+        if (caseSensitiveBox->isChecked())
+            flags |= QTextDocument::FindCaseSensitively;
+        if (wholeWordsBox->isChecked())
+            flags |= QTextDocument::FindWholeWords;
 
-        create_menu_item(file_menu, "New", G_CALLBACK(on_new_activate), GDK_KEY_n,
-                         GDK_CONTROL_MASK);
-        create_menu_item(file_menu, "Open", G_CALLBACK(on_open_activate), GDK_KEY_o,
-                         GDK_CONTROL_MASK);
-        gtk_menu_shell_append(GTK_MENU_SHELL(file_menu), gtk_separator_menu_item_new());
-        create_menu_item(file_menu, "Save", G_CALLBACK(on_save_activate), GDK_KEY_s,
-                         GDK_CONTROL_MASK);
-        create_menu_item(file_menu, "Save As", G_CALLBACK(on_save_as_activate), GDK_KEY_s,
-                         static_cast<GdkModifierType>(GDK_CONTROL_MASK | GDK_SHIFT_MASK));
+        QTextCursor cursor = textEdit->textCursor();
+        cursor = textEdit->document()->find(searchText, cursor, flags);
 
-        // Edit menu
-        GtkWidget *edit_menu = gtk_menu_new();
-        GtkWidget *edit_item = gtk_menu_item_new_with_label("Edit");
-        gtk_menu_item_set_submenu(GTK_MENU_ITEM(edit_item), edit_menu);
-        gtk_menu_shell_append(GTK_MENU_SHELL(menubar), edit_item);
+        if (cursor.isNull()) {
+            // Search from beginning
+            cursor = textEdit->document()->find(searchText, 0, flags);
+        }
 
-        create_menu_item(edit_menu, "Cut", G_CALLBACK(on_cut_activate), GDK_KEY_x,
-                         GDK_CONTROL_MASK);
-        create_menu_item(edit_menu, "Copy", G_CALLBACK(on_copy_activate), GDK_KEY_c,
-                         GDK_CONTROL_MASK);
-        create_menu_item(edit_menu, "Paste", G_CALLBACK(on_paste_activate), GDK_KEY_v,
-                         GDK_CONTROL_MASK);
-
-        // Search menu
-        GtkWidget *search_menu = gtk_menu_new();
-        GtkWidget *search_item = gtk_menu_item_new_with_label("Search");
-        gtk_menu_item_set_submenu(GTK_MENU_ITEM(search_item), search_menu);
-        gtk_menu_shell_append(GTK_MENU_SHELL(menubar), search_item);
-
-        create_menu_item(search_menu, "Find", G_CALLBACK(on_find_activate), GDK_KEY_f,
-                         GDK_CONTROL_MASK);
-        create_menu_item(search_menu, "Replace", G_CALLBACK(on_replace_activate), GDK_KEY_h,
-                         GDK_CONTROL_MASK);
-
-        // Help menu
-        GtkWidget *help_menu = gtk_menu_new();
-        GtkWidget *help_item = gtk_menu_item_new_with_label("Help");
-        gtk_menu_item_set_submenu(GTK_MENU_ITEM(help_item), help_menu);
-        gtk_menu_shell_append(GTK_MENU_SHELL(menubar), help_item);
-
-        create_menu_item(help_menu, "About", G_CALLBACK(on_about_activate), 0, (GdkModifierType)0);
-    }
-
-    void create_menu_item(GtkWidget *menu, const char *label, GCallback callback, guint key,
-                          GdkModifierType modifier) {
-        GtkWidget *item = gtk_menu_item_new_with_label(label);
-        gtk_menu_shell_append(GTK_MENU_SHELL(menu), item);
-        g_signal_connect(item, "activate", callback, this);
-
-        if (key != 0) {
-            gtk_widget_add_accelerator(item, "activate", accel_group, key, modifier,
-                                       GTK_ACCEL_VISIBLE);
+        if (!cursor.isNull()) {
+            textEdit->setTextCursor(cursor);
+            lastFoundCursor = cursor;
+        } else {
+            QMessageBox::information(this, "Find", "Text not found.");
         }
     }
 
-    void new_file() {
-        auto tab = std::make_unique<Tab>();
+    void findPrevious() {
+        QString searchText = findLineEdit->text();
+        if (searchText.isEmpty())
+            return;
 
-        // Create text buffer and view
-        tab->text_buffer = gtk_text_buffer_new(NULL);
-        tab->text_view = gtk_text_view_new_with_buffer(tab->text_buffer);
-        gtk_text_view_set_wrap_mode(GTK_TEXT_VIEW(tab->text_view), GTK_WRAP_WORD);
+        QTextDocument::FindFlags flags = QTextDocument::FindBackward;
+        if (caseSensitiveBox->isChecked())
+            flags |= QTextDocument::FindCaseSensitively;
+        if (wholeWordsBox->isChecked())
+            flags |= QTextDocument::FindWholeWords;
 
-        // CSS for font
-        GtkCssProvider *css_provider = gtk_css_provider_new();
-        gtk_css_provider_load_from_data(
-            css_provider, "textview { font-family: Monospace; font-size: 11pt; }", -1, NULL);
-        gtk_style_context_add_provider(gtk_widget_get_style_context(tab->text_view),
-                                       GTK_STYLE_PROVIDER(css_provider),
-                                       GTK_STYLE_PROVIDER_PRIORITY_APPLICATION);
-        g_object_unref(css_provider);
+        QTextCursor cursor = textEdit->textCursor();
+        cursor = textEdit->document()->find(searchText, cursor, flags);
 
-        // Scrolled window and container add
-        tab->scrolled_window = gtk_scrolled_window_new(NULL, NULL);
-        gtk_scrolled_window_set_policy(GTK_SCROLLED_WINDOW(tab->scrolled_window),
-                                       GTK_POLICY_AUTOMATIC, GTK_POLICY_AUTOMATIC);
-        gtk_container_add(GTK_CONTAINER(tab->scrolled_window), tab->text_view);
+        if (cursor.isNull()) {
+            // Search from end
+            cursor = textEdit->document()->find(searchText, textEdit->document()->characterCount(),
+                                                flags);
+        }
 
-        // Tab label and notebook page
-        std::string tab_title = "Untitled " + std::to_string(tab_counter++);
-        tab->filename = tab_title;
-        GtkWidget *tab_label = gtk_label_new(tab_title.c_str());
-
-        int page_num =
-            gtk_notebook_append_page(GTK_NOTEBOOK(notebook), tab->scrolled_window, tab_label);
-        gtk_notebook_set_current_page(GTK_NOTEBOOK(notebook), page_num);
-
-        // Connect buffer changed
-        g_signal_connect(tab->text_buffer, "changed", G_CALLBACK(on_text_changed), this);
-
-        // push the tab and then show the widget via tabs.back()
-        tabs.push_back(std::move(tab));
-        gtk_widget_show_all(tabs.back()->scrolled_window);
+        if (!cursor.isNull()) {
+            textEdit->setTextCursor(cursor);
+            lastFoundCursor = cursor;
+        } else {
+            QMessageBox::information(this, "Find", "Text not found.");
+        }
     }
 
-    Tab *get_current_tab() {
-        int current_page = gtk_notebook_get_current_page(GTK_NOTEBOOK(notebook));
-        if (current_page >= 0 && current_page < tabs.size()) {
-            return tabs[current_page].get();
+    void replace() {
+        if (!lastFoundCursor.isNull() && lastFoundCursor.hasSelection()) {
+            lastFoundCursor.insertText(replaceLineEdit->text());
+            textEdit->setTextCursor(lastFoundCursor);
+        }
+        findNext();
+    }
+
+    void replaceAll() {
+        QString searchText = findLineEdit->text();
+        QString replaceText = replaceLineEdit->text();
+        if (searchText.isEmpty())
+            return;
+
+        QTextDocument::FindFlags flags = QTextDocument::FindFlags();
+        if (caseSensitiveBox->isChecked())
+            flags |= QTextDocument::FindCaseSensitively;
+        if (wholeWordsBox->isChecked())
+            flags |= QTextDocument::FindWholeWords;
+
+        QTextCursor cursor = textEdit->document()->find(searchText, 0, flags);
+        int replacements = 0;
+
+        while (!cursor.isNull()) {
+            cursor.insertText(replaceText);
+            replacements++;
+            cursor = textEdit->document()->find(searchText, cursor, flags);
+        }
+
+        QMessageBox::information(this, "Replace All",
+                                 QString("Replaced %1 occurrence(s).").arg(replacements));
+    }
+
+  private:
+    void setupUI() {
+        QVBoxLayout *layout = new QVBoxLayout(this);
+
+        // Find section
+        QHBoxLayout *findLayout = new QHBoxLayout();
+        findLayout->addWidget(new QLabel("Find:"));
+        findLineEdit = new QLineEdit();
+        findLayout->addWidget(findLineEdit);
+        layout->addLayout(findLayout);
+
+        // Replace section (only in replace mode)
+        if (isReplaceMode) {
+            QHBoxLayout *replaceLayout = new QHBoxLayout();
+            replaceLayout->addWidget(new QLabel("Replace:"));
+            replaceLineEdit = new QLineEdit();
+            replaceLayout->addWidget(replaceLineEdit);
+            layout->addLayout(replaceLayout);
+        }
+
+        // Options
+        QHBoxLayout *optionsLayout = new QHBoxLayout();
+        caseSensitiveBox = new QCheckBox("Case sensitive");
+        wholeWordsBox = new QCheckBox("Whole words");
+        optionsLayout->addWidget(caseSensitiveBox);
+        optionsLayout->addWidget(wholeWordsBox);
+        layout->addLayout(optionsLayout);
+
+        // Buttons
+        QHBoxLayout *buttonLayout = new QHBoxLayout();
+        findNextButton = new QPushButton("Find Next");
+        findPrevButton = new QPushButton("Find Previous");
+        buttonLayout->addWidget(findNextButton);
+        buttonLayout->addWidget(findPrevButton);
+
+        if (isReplaceMode) {
+            replaceButton = new QPushButton("Replace");
+            replaceAllButton = new QPushButton("Replace All");
+            buttonLayout->addWidget(replaceButton);
+            buttonLayout->addWidget(replaceAllButton);
+        }
+
+        QPushButton *closeButton = new QPushButton("Close");
+        buttonLayout->addWidget(closeButton);
+        layout->addLayout(buttonLayout);
+
+        connect(closeButton, &QPushButton::clicked, this, &QDialog::close);
+    }
+
+    void connectSignals() {
+        connect(findNextButton, &QPushButton::clicked, this, &FindReplaceDialog::findNext);
+        connect(findPrevButton, &QPushButton::clicked, this, &FindReplaceDialog::findPrevious);
+        connect(findLineEdit, &QLineEdit::returnPressed, this, &FindReplaceDialog::findNext);
+
+        if (isReplaceMode) {
+            connect(replaceButton, &QPushButton::clicked, this, &FindReplaceDialog::replace);
+            connect(replaceAllButton, &QPushButton::clicked, this, &FindReplaceDialog::replaceAll);
+            connect(replaceLineEdit, &QLineEdit::returnPressed, this, &FindReplaceDialog::replace);
+        }
+    }
+};
+
+class XamEditor : public QMainWindow {
+    Q_OBJECT
+
+  private:
+    QTabWidget *tabWidget;
+    int tabCounter;
+    bool isDarkTheme;
+    FindReplaceDialog *findDialog;
+    FindReplaceDialog *replaceDialog;
+
+    struct Tab {
+        QTextEdit *textEdit;
+        QString filename;
+        bool isModified;
+
+        Tab() : textEdit(nullptr), filename("Untitled"), isModified(false) {}
+    };
+
+    std::vector<std::unique_ptr<Tab>> tabs;
+
+  public:
+    XamEditor(QWidget *parent = nullptr)
+        : QMainWindow(parent), tabCounter(1), isDarkTheme(false), findDialog(nullptr),
+          replaceDialog(nullptr) {
+        setWindowTitle("XamEditor");
+        setMinimumSize(800, 600);
+
+        setupUI();
+        setupMenus();
+        applyTheme();
+        newFile();
+    }
+
+  private slots:
+    void newFile() {
+        auto tab = std::make_unique<Tab>();
+        tab->textEdit = new QTextEdit();
+        tab->textEdit->setFont(QFont("Consolas", 11));
+        tab->filename = QString("Untitled %1").arg(tabCounter++);
+
+        connect(tab->textEdit, &QTextEdit::textChanged, [this, tabPtr = tab.get()]() {
+            tabPtr->isModified = true;
+            updateTabTitle(tabPtr);
+        });
+
+        int index = tabWidget->addTab(tab->textEdit, tab->filename);
+        tabWidget->setCurrentIndex(index);
+
+        // Save pointer before moving
+        QTextEdit *editor = tab->textEdit;
+
+        tabs.push_back(std::move(tab));
+
+        editor->setFocus(); // safe now
+    }
+
+    void openFile() {
+        QString filename = QFileDialog::getOpenFileName(this, "Open File");
+        if (filename.isEmpty())
+            return;
+
+        QFile file(filename);
+        if (!file.open(QIODevice::ReadOnly | QIODevice::Text)) {
+            QMessageBox::critical(this, "Error", "Could not open file for reading.");
+            return;
+        }
+
+        QTextStream in(&file);
+        QString content = in.readAll();
+        file.close();
+
+        newFile();
+        Tab *currentTab = getCurrentTab();
+        if (currentTab) {
+            currentTab->textEdit->setPlainText(content);
+            currentTab->filename = filename;
+            currentTab->isModified = false;
+
+            QFileInfo fileInfo(filename);
+            tabWidget->setTabText(tabWidget->currentIndex(), fileInfo.baseName());
+        }
+    }
+
+    void saveFile() {
+        Tab *tab = getCurrentTab();
+        if (!tab)
+            return;
+
+        if (tab->filename.startsWith("Untitled")) {
+            saveFileAs();
+            return;
+        }
+
+        QFile file(tab->filename);
+        if (!file.open(QIODevice::WriteOnly | QIODevice::Text)) {
+            QMessageBox::critical(this, "Error", "Could not open file for writing.");
+            return;
+        }
+
+        QTextStream out(&file);
+        out << tab->textEdit->toPlainText();
+        file.close();
+
+        tab->isModified = false;
+        updateTabTitle(tab);
+        statusBar()->showMessage("File saved successfully", 2000);
+    }
+
+    void saveFileAs() {
+        Tab *tab = getCurrentTab();
+        if (!tab)
+            return;
+
+        QString filename = QFileDialog::getSaveFileName(this, "Save File As");
+        if (filename.isEmpty())
+            return;
+
+        tab->filename = filename;
+        saveFile();
+
+        QFileInfo fileInfo(filename);
+        tabWidget->setTabText(tabWidget->currentIndex(), fileInfo.baseName());
+    }
+
+    void closeTab() {
+        int index = tabWidget->currentIndex();
+        if (index == -1)
+            return;
+
+        Tab *tab = getCurrentTab();
+        if (tab && tab->isModified) {
+            int ret = QMessageBox::question(
+                this, "Unsaved Changes",
+                "The document has unsaved changes. Do you want to save before closing?",
+                QMessageBox::Save | QMessageBox::Discard | QMessageBox::Cancel);
+
+            if (ret == QMessageBox::Save) {
+                saveFile();
+            } else if (ret == QMessageBox::Cancel) {
+                return;
+            }
+        }
+
+        tabWidget->removeTab(index);
+        tabs.erase(tabs.begin() + index);
+
+        if (tabs.empty()) {
+            newFile();
+        }
+    }
+
+    void cut() {
+        Tab *tab = getCurrentTab();
+        if (tab)
+            tab->textEdit->cut();
+    }
+
+    void copy() {
+        Tab *tab = getCurrentTab();
+        if (tab)
+            tab->textEdit->copy();
+    }
+
+    void paste() {
+        Tab *tab = getCurrentTab();
+        if (tab)
+            tab->textEdit->paste();
+    }
+
+    void showFind() {
+        Tab *tab = getCurrentTab();
+        if (!tab)
+            return;
+
+        if (findDialog) {
+            findDialog->close();
+            delete findDialog;
+        }
+
+        findDialog = new FindReplaceDialog(tab->textEdit, false, this);
+        findDialog->show();
+    }
+
+    void showReplace() {
+        Tab *tab = getCurrentTab();
+        if (!tab)
+            return;
+
+        if (replaceDialog) {
+            replaceDialog->close();
+            delete replaceDialog;
+        }
+
+        replaceDialog = new FindReplaceDialog(tab->textEdit, true, this);
+        replaceDialog->show();
+    }
+
+    void toggleTheme() {
+        isDarkTheme = !isDarkTheme;
+        applyTheme();
+    }
+
+    void showAbout() {
+        QMessageBox::about(this, "About XamEditor",
+                           "<h2>XamEditor 1.0</h2>"
+                           "<p>A simple text editor with tabs and Gruvbox theming.</p>"
+                           "<p>Copyright © 2025</p>"
+                           "<p><a href='https://example.com'>https://example.com</a></p>");
+    }
+
+  private:
+    void setupUI() {
+        QWidget *centralWidget = new QWidget();
+        setCentralWidget(centralWidget);
+
+        QVBoxLayout *layout = new QVBoxLayout(centralWidget);
+        layout->setContentsMargins(0, 0, 0, 0);
+
+        tabWidget = new QTabWidget();
+        tabWidget->setTabsClosable(true);
+        tabWidget->setMovable(true);
+
+        connect(tabWidget, &QTabWidget::tabCloseRequested, this, &XamEditor::closeTab);
+
+        layout->addWidget(tabWidget);
+
+        statusBar()->showMessage("Ready");
+    }
+
+    void setupMenus() {
+        // File Menu
+        QMenu *fileMenu = menuBar()->addMenu("&File");
+
+        QAction *newAction = fileMenu->addAction("&New");
+        newAction->setShortcut(QKeySequence::New);
+        connect(newAction, &QAction::triggered, this, &XamEditor::newFile);
+
+        QAction *openAction = fileMenu->addAction("&Open");
+        openAction->setShortcut(QKeySequence::Open);
+        connect(openAction, &QAction::triggered, this, &XamEditor::openFile);
+
+        fileMenu->addSeparator();
+
+        QAction *saveAction = fileMenu->addAction("&Save");
+        saveAction->setShortcut(QKeySequence::Save);
+        connect(saveAction, &QAction::triggered, this, &XamEditor::saveFile);
+
+        QAction *saveAsAction = fileMenu->addAction("Save &As");
+        saveAsAction->setShortcut(QKeySequence::SaveAs);
+        connect(saveAsAction, &QAction::triggered, this, &XamEditor::saveFileAs);
+
+        fileMenu->addSeparator();
+
+        QAction *closeTabAction = fileMenu->addAction("&Close Tab");
+        closeTabAction->setShortcut(QKeySequence("Ctrl+W"));
+        connect(closeTabAction, &QAction::triggered, this, &XamEditor::closeTab);
+
+        QAction *exitAction = fileMenu->addAction("E&xit");
+        exitAction->setShortcut(QKeySequence::Quit);
+        connect(exitAction, &QAction::triggered, this, &QWidget::close);
+
+        // Edit Menu
+        QMenu *editMenu = menuBar()->addMenu("&Edit");
+
+        QAction *cutAction = editMenu->addAction("Cu&t");
+        cutAction->setShortcut(QKeySequence::Cut);
+        connect(cutAction, &QAction::triggered, this, &XamEditor::cut);
+
+        QAction *copyAction = editMenu->addAction("&Copy");
+        copyAction->setShortcut(QKeySequence::Copy);
+        connect(copyAction, &QAction::triggered, this, &XamEditor::copy);
+
+        QAction *pasteAction = editMenu->addAction("&Paste");
+        pasteAction->setShortcut(QKeySequence::Paste);
+        connect(pasteAction, &QAction::triggered, this, &XamEditor::paste);
+
+        // Search Menu
+        QMenu *searchMenu = menuBar()->addMenu("&Search");
+
+        QAction *findAction = searchMenu->addAction("&Find");
+        findAction->setShortcut(QKeySequence::Find);
+        connect(findAction, &QAction::triggered, this, &XamEditor::showFind);
+
+        QAction *replaceAction = searchMenu->addAction("&Replace");
+        replaceAction->setShortcut(QKeySequence::Replace);
+        connect(replaceAction, &QAction::triggered, this, &XamEditor::showReplace);
+
+        // View Menu
+        QMenu *viewMenu = menuBar()->addMenu("&View");
+
+        QAction *themeAction = viewMenu->addAction("Toggle &Theme");
+        themeAction->setShortcut(QKeySequence("Ctrl+T"));
+        connect(themeAction, &QAction::triggered, this, &XamEditor::toggleTheme);
+
+        // Help Menu
+        QMenu *helpMenu = menuBar()->addMenu("&Help");
+
+        QAction *aboutAction = helpMenu->addAction("&About");
+        connect(aboutAction, &QAction::triggered, this, &XamEditor::showAbout);
+    }
+
+    void applyTheme() {
+        QString stylesheet;
+
+        if (isDarkTheme) {
+            // Gruvbox Dark Theme
+            stylesheet = R"(
+                QMainWindow {
+                    background-color: #282828;
+                    color: #ebdbb2;
+                }
+                QMenuBar {
+                    background-color: #3c3836;
+                    color: #ebdbb2;
+                    border-bottom: 1px solid #504945;
+                }
+                QMenuBar::item {
+                    background-color: transparent;
+                    padding: 4px 8px;
+                }
+                QMenuBar::item:selected {
+                    background-color: #504945;
+                }
+                QMenu {
+                    background-color: #3c3836;
+                    color: #ebdbb2;
+                    border: 1px solid #504945;
+                }
+                QMenu::item:selected {
+                    background-color: #504945;
+                }
+                QTabWidget::pane {
+                    border: 1px solid #504945;
+                    background-color: #282828;
+                }
+                QTabBar::tab {
+                    background-color: #3c3836;
+                    color: #ebdbb2;
+                    padding: 8px 12px;
+                    margin-right: 2px;
+                }
+                QTabBar::tab:selected {
+                    background-color: #504945;
+                }
+                QTextEdit {
+                    background-color: #282828;
+                    color: #ebdbb2;
+                    border: none;
+                    selection-background-color: #458588;
+                }
+                QStatusBar {
+                    background-color: #3c3836;
+                    color: #ebdbb2;
+                }
+                QDialog {
+                    background-color: #282828;
+                    color: #ebdbb2;
+                }
+                QLineEdit {
+                    background-color: #3c3836;
+                    color: #ebdbb2;
+                    border: 1px solid #504945;
+                    padding: 4px;
+                }
+                QPushButton {
+                    background-color: #3c3836;
+                    color: #ebdbb2;
+                    border: 1px solid #504945;
+                    padding: 6px 12px;
+                }
+                QPushButton:hover {
+                    background-color: #504945;
+                }
+                QCheckBox {
+                    color: #ebdbb2;
+                }
+            )";
+        } else {
+            // Gruvbox Light Theme
+            stylesheet = R"(
+                QMainWindow {
+                    background-color: #fbf1c7;
+                    color: #3c3836;
+                }
+                QMenuBar {
+                    background-color: #ebdbb2;
+                    color: #3c3836;
+                    border-bottom: 1px solid #d5c4a1;
+                }
+                QMenuBar::item {
+                    background-color: transparent;
+                    padding: 4px 8px;
+                }
+                QMenuBar::item:selected {
+                    background-color: #d5c4a1;
+                }
+                QMenu {
+                    background-color: #ebdbb2;
+                    color: #3c3836;
+                    border: 1px solid #d5c4a1;
+                }
+                QMenu::item:selected {
+                    background-color: #d5c4a1;
+                }
+                QTabWidget::pane {
+                    border: 1px solid #d5c4a1;
+                    background-color: #fbf1c7;
+                }
+                QTabBar::tab {
+                    background-color: #ebdbb2;
+                    color: #3c3836;
+                    padding: 8px 12px;
+                    margin-right: 2px;
+                }
+                QTabBar::tab:selected {
+                    background-color: #d5c4a1;
+                }
+                QTextEdit {
+                    background-color: #fbf1c7;
+                    color: #3c3836;
+                    border: none;
+                    selection-background-color: #b57614;
+                }
+                QStatusBar {
+                    background-color: #ebdbb2;
+                    color: #3c3836;
+                }
+                QDialog {
+                    background-color: #fbf1c7;
+                    color: #3c3836;
+                }
+                QLineEdit {
+                    background-color: #ebdbb2;
+                    color: #3c3836;
+                    border: 1px solid #d5c4a1;
+                    padding: 4px;
+                }
+                QPushButton {
+                    background-color: #ebdbb2;
+                    color: #3c3836;
+                    border: 1px solid #d5c4a1;
+                    padding: 6px 12px;
+                }
+                QPushButton:hover {
+                    background-color: #d5c4a1;
+                }
+                QCheckBox {
+                    color: #3c3836;
+                }
+            )";
+        }
+
+        setStyleSheet(stylesheet);
+    }
+
+    Tab *getCurrentTab() {
+        int index = tabWidget->currentIndex();
+        if (index >= 0 && index < tabs.size()) {
+            return tabs[index].get();
         }
         return nullptr;
     }
 
-    void open_file() {
-        GtkWidget *dialog = gtk_file_chooser_dialog_new(
-            "Open File", GTK_WINDOW(window), GTK_FILE_CHOOSER_ACTION_OPEN, "_Cancel",
-            GTK_RESPONSE_CANCEL, "_Open", GTK_RESPONSE_ACCEPT, NULL);
-
-        if (gtk_dialog_run(GTK_DIALOG(dialog)) == GTK_RESPONSE_ACCEPT) {
-            char *filename = gtk_file_chooser_get_filename(GTK_FILE_CHOOSER(dialog));
-
-            // Read file content
-            GError *error = NULL;
-            gchar *content = NULL;
-            gsize length = 0;
-
-            if (g_file_get_contents(filename, &content, &length, &error)) {
-                new_file();
-                Tab *tab = get_current_tab();
-                if (tab) {
-                    gtk_text_buffer_set_text(tab->text_buffer, content, length);
-                    tab->filename = filename;
-                    tab->is_modified = false;
-
-                    // Update tab label
-                    gchar *basename = g_path_get_basename(filename);
-                    GtkWidget *tab_label = gtk_label_new(basename);
-                    gtk_notebook_set_tab_label(GTK_NOTEBOOK(notebook), tab->scrolled_window,
-                                               tab_label);
-                    g_free(basename);
+    void updateTabTitle(Tab *tab) {
+        for (int i = 0; i < tabs.size(); ++i) {
+            if (tabs[i].get() == tab) {
+                QString title = QFileInfo(tab->filename).baseName();
+                if (tab->isModified) {
+                    title += " *";
                 }
-                g_free(content);
-            } else {
-                show_error_dialog("Error opening file", error->message);
-                g_error_free(error);
+                tabWidget->setTabText(i, title);
+                break;
             }
-
-            g_free(filename);
-        }
-
-        gtk_widget_destroy(dialog);
-    }
-
-    void save_file() {
-        Tab *tab = get_current_tab();
-        if (!tab)
-            return;
-
-        if (tab->filename.find("Untitled") == 0) {
-            save_file_as();
-            return;
-        }
-
-        GtkTextIter start, end;
-        gtk_text_buffer_get_bounds(tab->text_buffer, &start, &end);
-        gchar *content = gtk_text_buffer_get_text(tab->text_buffer, &start, &end, FALSE);
-
-        GError *error = NULL;
-        if (g_file_set_contents(tab->filename.c_str(), content, -1, &error)) {
-            tab->is_modified = false;
-        } else {
-            show_error_dialog("Error saving file", error->message);
-            g_error_free(error);
-        }
-
-        g_free(content);
-    }
-
-    void save_file_as() {
-        GtkWidget *dialog = gtk_file_chooser_dialog_new(
-            "Save File As", GTK_WINDOW(window), GTK_FILE_CHOOSER_ACTION_SAVE, "_Cancel",
-            GTK_RESPONSE_CANCEL, "_Save", GTK_RESPONSE_ACCEPT, NULL);
-
-        gtk_file_chooser_set_do_overwrite_confirmation(GTK_FILE_CHOOSER(dialog), TRUE);
-
-        if (gtk_dialog_run(GTK_DIALOG(dialog)) == GTK_RESPONSE_ACCEPT) {
-            char *filename = gtk_file_chooser_get_filename(GTK_FILE_CHOOSER(dialog));
-
-            Tab *tab = get_current_tab();
-            if (tab) {
-                tab->filename = filename;
-                save_file();
-
-                // Update tab label
-                gchar *basename = g_path_get_basename(filename);
-                GtkWidget *tab_label = gtk_label_new(basename);
-                gtk_notebook_set_tab_label(GTK_NOTEBOOK(notebook), tab->scrolled_window, tab_label);
-                g_free(basename);
-            }
-
-            g_free(filename);
-        }
-
-        gtk_widget_destroy(dialog);
-    }
-
-    void show_find_dialog() {
-        GtkWidget *dialog =
-            gtk_dialog_new_with_buttons("Find", GTK_WINDOW(window), GTK_DIALOG_MODAL, "_Cancel",
-                                        GTK_RESPONSE_CANCEL, "_Find", GTK_RESPONSE_ACCEPT, NULL);
-
-        GtkWidget *content_area = gtk_dialog_get_content_area(GTK_DIALOG(dialog));
-        GtkWidget *entry = gtk_entry_new();
-        gtk_entry_set_placeholder_text(GTK_ENTRY(entry), "Enter search text...");
-        gtk_box_pack_start(GTK_BOX(content_area), entry, TRUE, TRUE, 5);
-
-        gtk_widget_show_all(dialog);
-
-        if (gtk_dialog_run(GTK_DIALOG(dialog)) == GTK_RESPONSE_ACCEPT) {
-            const gchar *search_text = gtk_entry_get_text(GTK_ENTRY(entry));
-            find_text(search_text);
-        }
-
-        gtk_widget_destroy(dialog);
-    }
-
-    void find_text(const gchar *search_text) {
-        Tab *tab = get_current_tab();
-        if (!tab || !search_text || strlen(search_text) == 0)
-            return;
-
-        GtkTextIter start, match_start, match_end;
-        gtk_text_buffer_get_start_iter(tab->text_buffer, &start);
-
-        if (gtk_text_iter_forward_search(&start, search_text, GTK_TEXT_SEARCH_CASE_INSENSITIVE,
-                                         &match_start, &match_end, NULL)) {
-            gtk_text_buffer_select_range(tab->text_buffer, &match_start, &match_end);
-            gtk_text_view_scroll_to_iter(GTK_TEXT_VIEW(tab->text_view), &match_start, 0.0, FALSE,
-                                         0.0, 0.0);
-        }
-    }
-
-    void show_replace_dialog() {
-        GtkWidget *dialog = gtk_dialog_new_with_buttons(
-            "Replace", GTK_WINDOW(window), GTK_DIALOG_MODAL, "_Cancel", GTK_RESPONSE_CANCEL,
-            "_Replace All", GTK_RESPONSE_ACCEPT, NULL);
-
-        GtkWidget *content_area = gtk_dialog_get_content_area(GTK_DIALOG(dialog));
-
-        GtkWidget *find_entry = gtk_entry_new();
-        gtk_entry_set_placeholder_text(GTK_ENTRY(find_entry), "Find...");
-
-        GtkWidget *replace_entry = gtk_entry_new();
-        gtk_entry_set_placeholder_text(GTK_ENTRY(replace_entry), "Replace with...");
-
-        gtk_box_pack_start(GTK_BOX(content_area), find_entry, TRUE, TRUE, 5);
-        gtk_box_pack_start(GTK_BOX(content_area), replace_entry, TRUE, TRUE, 5);
-
-        gtk_widget_show_all(dialog);
-
-        if (gtk_dialog_run(GTK_DIALOG(dialog)) == GTK_RESPONSE_ACCEPT) {
-            const gchar *find_text = gtk_entry_get_text(GTK_ENTRY(find_entry));
-            const gchar *replace_text = gtk_entry_get_text(GTK_ENTRY(replace_entry));
-            replace_all_text(find_text, replace_text);
-        }
-
-        gtk_widget_destroy(dialog);
-    }
-
-    void replace_all_text(const gchar *find_text, const gchar *replace_text) {
-        Tab *tab = get_current_tab();
-        if (!tab || !find_text || strlen(find_text) == 0)
-            return;
-
-        GtkTextIter start, end;
-        gtk_text_buffer_get_bounds(tab->text_buffer, &start, &end);
-        gchar *content = gtk_text_buffer_get_text(tab->text_buffer, &start, &end, FALSE);
-
-        std::string text_content(content);
-        std::string find_str(find_text);
-        std::string replace_str(replace_text);
-
-        size_t pos = 0;
-        while ((pos = text_content.find(find_str, pos)) != std::string::npos) {
-            text_content.replace(pos, find_str.length(), replace_str);
-            pos += replace_str.length();
-        }
-
-        gtk_text_buffer_set_text(tab->text_buffer, text_content.c_str(), -1);
-        g_free(content);
-    }
-
-    void show_about_dialog() {
-        gtk_show_about_dialog(GTK_WINDOW(window), "program-name", "Text Editor", "version", "1.0",
-                              "comments", "A simple text editor with tabs", "copyright", "© 2025",
-                              "website", "https://example.com", NULL);
-    }
-
-    void show_error_dialog(const char *title, const char *message) {
-        GtkWidget *dialog =
-            gtk_message_dialog_new(GTK_WINDOW(window), GTK_DIALOG_DESTROY_WITH_PARENT,
-                                   GTK_MESSAGE_ERROR, GTK_BUTTONS_CLOSE, "%s", title);
-        gtk_message_dialog_format_secondary_text(GTK_MESSAGE_DIALOG(dialog), "%s", message);
-        gtk_dialog_run(GTK_DIALOG(dialog));
-        gtk_widget_destroy(dialog);
-    }
-
-    // Static callback functions
-    static void on_new_activate(GtkWidget *widget, gpointer data) {
-        XamEditor *editor = static_cast<XamEditor *>(data);
-        editor->new_file();
-    }
-
-    static void on_open_activate(GtkWidget *widget, gpointer data) {
-        XamEditor *editor = static_cast<XamEditor *>(data);
-        editor->open_file();
-    }
-
-    static void on_save_activate(GtkWidget *widget, gpointer data) {
-        XamEditor *editor = static_cast<XamEditor *>(data);
-        editor->save_file();
-    }
-
-    static void on_save_as_activate(GtkWidget *widget, gpointer data) {
-        XamEditor *editor = static_cast<XamEditor *>(data);
-        editor->save_file_as();
-    }
-
-    static void on_cut_activate(GtkWidget *widget, gpointer data) {
-        XamEditor *editor = static_cast<XamEditor *>(data);
-        Tab *tab = editor->get_current_tab();
-        if (tab) {
-            GtkClipboard *clipboard = gtk_clipboard_get(GDK_SELECTION_CLIPBOARD);
-            gtk_text_buffer_cut_clipboard(tab->text_buffer, clipboard, TRUE);
-        }
-    }
-
-    static void on_copy_activate(GtkWidget *widget, gpointer data) {
-        XamEditor *editor = static_cast<XamEditor *>(data);
-        Tab *tab = editor->get_current_tab();
-        if (tab) {
-            GtkClipboard *clipboard = gtk_clipboard_get(GDK_SELECTION_CLIPBOARD);
-            gtk_text_buffer_copy_clipboard(tab->text_buffer, clipboard);
-        }
-    }
-
-    static void on_paste_activate(GtkWidget *widget, gpointer data) {
-        XamEditor *editor = static_cast<XamEditor *>(data);
-        Tab *tab = editor->get_current_tab();
-        if (tab) {
-            GtkClipboard *clipboard = gtk_clipboard_get(GDK_SELECTION_CLIPBOARD);
-            gtk_text_buffer_paste_clipboard(tab->text_buffer, clipboard, NULL, TRUE);
-        }
-    }
-
-    static void on_find_activate(GtkWidget *widget, gpointer data) {
-        XamEditor *editor = static_cast<XamEditor *>(data);
-        editor->show_find_dialog();
-    }
-
-    static void on_replace_activate(GtkWidget *widget, gpointer data) {
-        XamEditor *editor = static_cast<XamEditor *>(data);
-        editor->show_replace_dialog();
-    }
-
-    static void on_about_activate(GtkWidget *widget, gpointer data) {
-        XamEditor *editor = static_cast<XamEditor *>(data);
-        editor->show_about_dialog();
-    }
-
-    static void on_text_changed(GtkTextBuffer *buffer, gpointer data) {
-        XamEditor *editor = static_cast<XamEditor *>(data);
-        Tab *tab = editor->get_current_tab();
-        if (tab && tab->text_buffer == buffer) {
-            tab->is_modified = true;
         }
     }
 };
 
 int main(int argc, char *argv[]) {
-    gtk_init(&argc, &argv);
+    QApplication app(argc, argv);
+
     XamEditor editor;
-    gtk_main();
-    return 0;
+    editor.show();
+
+    return app.exec();
 }
+
+#include "xam.moc"
